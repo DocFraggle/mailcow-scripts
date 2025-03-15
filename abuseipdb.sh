@@ -73,7 +73,7 @@ exit_code=$?
 
 # Check if curl encountered an error
 if [ $exit_code -ne 0 ]; then
-  echo "Curl encountered an error with exit code $exit_code while rertieving the AbuseIPDB IPs"
+  echo "Curl encountered an error with exit code $exit_code while retrieving the AbuseIPDB IPs"
   exit 1
 fi
 
