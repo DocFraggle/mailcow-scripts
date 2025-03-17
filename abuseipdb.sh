@@ -1,16 +1,8 @@
 #!/bin/bash
 
 # Adjust the values of the following variables
-ABUSEIP_API_KEY="XXXXXXXXXXXXXX"
-MAILCOW_API_KEY="YYYYYYYYYYYYYYY"
-MAILSERVER_FQDN="your.mail.server"
-
-# Add your own personal blacklist to this file in vaild CIDR notation
-# i.e. 1.2.3.4/32
-#      5.6.7.0/24
-#      2001:db8:abcd:1234::1/64  
-
-PERSONAL_BLACKLIST_FILE="/path/to/your/blacklist.txt"
+ABUSEIP_API_KEY="XXXXXXXXXXXXXXXXXXXXXXXXXXX"
+ABUSEIPDB_LIST="/tmp/abuseipdb_blacklist.txt"
 
 echo "Retrieve IPs from AbuseIPDB"
 curl -sG https://api.abuseipdb.com/api/v2/blacklist \
@@ -18,7 +10,7 @@ curl -sG https://api.abuseipdb.com/api/v2/blacklist \
   -d plaintext \
   -H "Key: $ABUSEIP_API_KEY" \
   -H "Accept: application/json" \
-  -o /tmp/abuseipdb_blacklist.txt
+  -o $ABUSEIPDB_LIST
 
 # Capture the exit code from curl
 exit_code=$?
@@ -29,52 +21,62 @@ if [ $exit_code -ne 0 ]; then
   exit 1
 fi
 
-# Add a newline to the end of the blacklist file
-echo >> /tmp/abuseipdb_blacklist.txt
+# iptables variables
+CHAIN_NAME="MAILCOW" # DO NOT CHANGE THIS!
+IPSET_V4="abuseipdb_blacklist_v4"
+IPSET_V6="abuseipdb_blacklist_v6"
+IPTABLES_RULE_V4="-m set --match-set $IPSET_V4 src -j DROP"
+IPTABLES_RULE_V6="-m set --match-set $IPSET_V6 src -j DROP"
 
-echo "Get current Fail2Ban config, extract active_bans IPs and add them to the blacklist file"
-curl -s --header "Content-Type: application/json" \
-     --header "X-API-Key: $MAILCOW_API_KEY" \
-      "https://${MAILSERVER_FQDN}/api/v1/get/fail2ban" |\
-      jq -r 'if .active_bans | length > 0 then .active_bans[].ip else "" end' >> /tmp/abuseipdb_blacklist.txt
+echo "Ensure the ipsets exist"
+# Create IPv4 ipset if missing
+if ! ipset list $IPSET_V4 &>/dev/null; then
+  echo "Creating ipset $IPSET_V4"
+  ipset create $IPSET_V4 hash:ip family inet
+fi
+# Create IPv6 ipset if missing
+if ! ipset list $IPSET_V6 &>/dev/null; then
+  echo "Creating ipset $IPSET_V6"
+  ipset create $IPSET_V6 hash:ip family inet6
+fi
 
-BLACKLIST=$(awk 'NF {if (index($0, ":") > 0) printf "%s%s/128", sep, $0; else printf "%s%s/32", sep, $0; sep=","} END {print ""}' /tmp/abuseipdb_blacklist.txt)
+echo "Flush existing ipset entries"
+ipset flush $IPSET_V4
+ipset flush $IPSET_V6
 
-cat <<EOF > /tmp/request.json
-{
-  "items":["none"],
-  "attr": {
-    "blacklist": "$BLACKLIST"
-  }
+echo "Process each IP and add it to the appropriate ipset"
+while IFS= read -r ip; do
+  [[ -z "$ip" ]] && continue  # Skip empty lines
+  if [[ "$ip" =~ : ]]
+  then
+    ipset add $IPSET_V6 "$ip" 2>/dev/null
+  else
+    ipset add $IPSET_V4 "$ip" 2>/dev/null
+  fi
+done < $ABUSEIPDB_LIST
+
+echo "Ensure iptables/ip6tables rules exist at the top"
+
+ensure_rule_at_top() {
+  local chain=$1
+  local rule=$2
+  local cmd=$3  # iptables or ip6tables
+
+  if ! $cmd -S $chain | grep -q -- "$rule"; then
+    $cmd -I $chain 1 $rule  # Add rule if missing
+  else
+    FIRST_RULE=$($cmd -S $chain | sed -n '2p')
+    if [[ "$FIRST_RULE" != *"$rule"* ]]; then
+      $cmd -D $chain $rule  # Remove old rule
+      $cmd -I $chain 1 $rule  # Reinsert at the top
+    fi
+  fi
 }
-EOF
 
-# Vaildate CIDR notation of personal blacklist file and add content to the "blacklist" key of the json file
-if [ -f $PERSONAL_BLACKLIST_FILE ]
-then
-  echo "Adding personal blacklist"
-  grep -E '^(([0-9]{1,3}\.){3}[0-9]{1,3}\/([0-9]|[12][0-9]|3[0-2])|([0-9a-fA-F:]+\/([0-9]|[1-9][0-9]|1[0-1][0-9]|12[0-8])))$' $PERSONAL_BLACKLIST_FILE > /tmp/personal_blacklist.txt
-  jq --arg new "$(paste -sd, /tmp/personal_blacklist.txt)" '.attr.blacklist += ("," + $new)' /tmp/request.json > /tmp/request.json.tmp
-  mv /tmp/request.json.tmp /tmp/request.json
-else
-  echo "No personal blacklist file present, skipping this step"
-fi
+ensure_rule_at_top "$CHAIN_NAME" "$IPTABLES_RULE_V4" "iptables"
+ensure_rule_at_top "$CHAIN_NAME" "$IPTABLES_RULE_V6" "ip6tables"
 
-echo "Add IPs to Fail2Ban" 
-curl -s --include \
-     --request POST \
-     --header "Content-Type: application/json" \
-     --header "X-API-Key: $MAILCOW_API_KEY" \
-     --data-binary @/tmp/request.json \
-     "https://${MAILSERVER_FQDN}/api/v1/edit/fail2ban"
+# Save ipset rules to persist across reboots
+ipset save > /etc/ipset.rules
 
-# Capture the exit code from curl
-exit_code=$?
-
-# Check if curl encountered an error
-if [ $exit_code -ne 0 ]; then
-  echo "Curl encountered an error with exit code $exit_code while retrieving the AbuseIPDB IPs"
-  exit 1
-fi
-
-echo -e "\n\nAll done, have fun"
+echo -e "\n\nAll done, have fun.\n\nCheck your current iplist entries with 'ipset list | less'"
