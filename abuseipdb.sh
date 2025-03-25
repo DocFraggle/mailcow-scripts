@@ -4,21 +4,67 @@
 ABUSEIP_API_KEY="XXXXXXXXXXXXXXXXXXXXXXXXXXX"
 ABUSEIPDB_LIST="/tmp/abuseipdb_blacklist.txt"
 
-echo "Retrieve IPs from AbuseIPDB"
-curl -sG https://api.abuseipdb.com/api/v2/blacklist \
-  -d confidenceMinimum=90 \
-  -d plaintext \
-  -H "Key: $ABUSEIP_API_KEY" \
-  -H "Accept: application/json" \
-  -o $ABUSEIPDB_LIST
+show_help() {
+  echo "Usage: $0 [OPTIONS]"
+  echo
+  echo "Options:"
+  echo "  --skip-abuseipdb     Skip AbuseIPDB call, use last output file"
+  echo "  -h, --help           Show this help message"
+}
 
-# Capture the exit code from curl
-exit_code=$?
+SKIP_ABUSEIPDB=false
 
-# Check if curl encountered an error
-if [ $exit_code -ne 0 ]; then
-  echo "Curl encountered an error with exit code $exit_code while rertieving the AbuseIPDB IPs"
-  exit 1
+for arg in "$@"; do
+  case $arg in
+    --skip-abuseipdb)
+      SKIP_ABUSEIPDB=true
+      ;;
+    -h|--help)
+      show_help
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $arg"
+      show_help
+      exit 1
+      ;;
+  esac
+done
+
+# Check if necessary packages are installed
+for cmd in ipset jq; do
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    echo "$cmd NOT found, please install package"
+    exit 1
+  fi
+done
+
+if [ "$SKIP_ABUSEIPDB" = false ]
+then
+  echo "Retrieve IPs from AbuseIPDB"
+  curl -sG https://api.abuseipdb.com/api/v2/blacklist \
+    -d confidenceMinimum=90 \
+    -d plaintext \
+    -H "Key: $ABUSEIP_API_KEY" \
+    -H "Accept: application/json" \
+    -o $ABUSEIPDB_LIST
+
+  # Capture the exit code from curl
+  exit_code=$?
+
+  # Check if curl encountered an error
+  if [ $exit_code -ne 0 ]; then
+    echo "Curl encountered an error with exit code $exit_code while rertieving the AbuseIPDB IPs"
+    exit 1
+  fi
+else
+  if [ -f $ABUSEIPDB_LIST ]
+  then
+    echo "Skipping AbuseIPDB call"
+  else
+    echo "Option to skip AbuseIPDB call was chosen, but file $ABUSEIPDB_LIST does not exist"
+    exit 1
+  fi
 fi
 
 # iptables variables
