@@ -9,15 +9,20 @@ show_help() {
   echo
   echo "Options:"
   echo "  --skip-abuseipdb     Skip AbuseIPDB call, use last output file"
+  echo "  --enable-log         Add an iptables LOG rule to show drops in journald/syslog"
   echo "  -h, --help           Show this help message"
 }
 
 SKIP_ABUSEIPDB=false
+ENABLE_LOG=false
 
 for arg in "$@"; do
   case $arg in
     --skip-abuseipdb)
       SKIP_ABUSEIPDB=true
+      ;;
+    --enable-log)
+      ENABLE_LOG=true
       ;;
     -h|--help)
       show_help
@@ -67,12 +72,8 @@ else
   fi
 fi
 
-# iptables variables
-CHAIN_NAME="MAILCOW" # DO NOT CHANGE THIS!
 IPSET_V4="abuseipdb_blacklist_v4"
 IPSET_V6="abuseipdb_blacklist_v6"
-IPTABLES_RULE_V4="-m set --match-set $IPSET_V4 src -j DROP"
-IPTABLES_RULE_V6="-m set --match-set $IPSET_V6 src -j DROP"
 
 echo "Ensure the ipsets exist"
 # Create IPv4 ipset if missing
@@ -107,20 +108,57 @@ ensure_rule_at_top() {
   local chain=$1
   local rule=$2
   local cmd=$3  # iptables or ip6tables
+  local log=$4
 
   if ! $cmd -S $chain | grep -q -- "$rule"; then
-    $cmd -I $chain 1 $rule  # Add rule if missing
+    eval "$cmd -I $chain 1 $rule"  # Add rule if missing
   else
     FIRST_RULE=$($cmd -S $chain | sed -n '2p')
     if [[ "$FIRST_RULE" != *"$rule"* ]]; then
-      $cmd -D $chain $rule  # Remove old rule
-      $cmd -I $chain 1 $rule  # Reinsert at the top
+      
+      for line in $($cmd -nL MAILCOW --line-numbers | grep 'MAILCOW-DROP' | awk '{print $1}' | sort -rn); do
+        $cmd -D MAILCOW "$line"
+      done
+      eval "$cmd -D $chain $rule"  # Remove old rule
+      eval "$cmd -I $chain 1 $rule"  # Reinsert at the top
     fi
   fi
 }
 
+# iptables variables
+CHAIN_NAME="MAILCOW" # DO NOT CHANGE THIS!
+IPTABLES_RULE_V4="-m set --match-set $IPSET_V4 src -j DROP"
+IPTABLES_RULE_V6="-m set --match-set $IPSET_V6 src -j DROP"
+
 ensure_rule_at_top "$CHAIN_NAME" "$IPTABLES_RULE_V4" "iptables"
 ensure_rule_at_top "$CHAIN_NAME" "$IPTABLES_RULE_V6" "ip6tables"
+
+if [ "$ENABLE_LOG" = true ]
+then
+  IPTABLES_RULE_V4_LOG="-m set --match-set abuseipdb_blacklist_v4 src -j LOG --log-prefix 'MAILCOW-DROP: ' --log-level 4"
+  IPTABLES_RULE_V6_LOG="-m set --match-set abuseipdb_blacklist_v6 src -j LOG --log-prefix 'MAILCOW-DROP: ' --log-level 4"
+  
+  # Remove all LOG rules
+  for cmd in iptables ip6tables
+  do
+    for line in $($cmd -nL MAILCOW --line-numbers | grep 'MAILCOW-DROP' | awk '{print $1}' | sort -rn)
+    do
+      $cmd -D MAILCOW "$line" >/dev/null
+    done
+  done
+  
+  ensure_rule_at_top "$CHAIN_NAME" "$IPTABLES_RULE_V4_LOG" "iptables"
+  ensure_rule_at_top "$CHAIN_NAME" "$IPTABLES_RULE_V6_LOG" "ip6tables"
+else
+  # Remove all potential LOG rules as argument wasn't specified
+  for cmd in iptables ip6tables
+  do
+    for line in $($cmd -nL MAILCOW --line-numbers | grep 'MAILCOW-DROP' | awk '{print $1}' | sort -rn)
+    do
+      $cmd -D MAILCOW "$line" >/dev/null
+    done
+  done
+fi
 
 # Save ipset rules to persist across reboots
 ipset save > /etc/ipset.rules
