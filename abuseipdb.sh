@@ -14,6 +14,7 @@ show_help() {
 }
 
 SKIP_ABUSEIPDB=false
+ENABLE_LOG=false
 
 for arg in "$@"; do
   case $arg in
