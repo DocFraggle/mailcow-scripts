@@ -14,7 +14,6 @@ show_help() {
 }
 
 SKIP_ABUSEIPDB=false
-ENABLE_LOG=false
 
 for arg in "$@"; do
   case $arg in
@@ -36,13 +35,11 @@ for arg in "$@"; do
   esac
 done
 
-# Check if necessary packages are installed
-for cmd in ipset jq; do
-  if ! command -v "$cmd" >/dev/null 2>&1; then
-    echo "$cmd NOT found, please install package"
-    exit 1
-  fi
-done
+# Check if ipset installed
+if ! command -v ipset >/dev/null 2>&1; then
+  echo "ipset binary NOT found, please install package"
+  exit 1
+fi
 
 if [ "$SKIP_ABUSEIPDB" = false ]
 then
@@ -126,7 +123,9 @@ ensure_rule_at_top() {
 }
 
 # iptables variables
-CHAIN_NAME="MAILCOW" # DO NOT CHANGE THIS!
+CHAIN_NAME="MAILCOW" # DO NOT CHANGE THIS UNTIL YOU KNOW WHAT YOU'RE DOING! :)
+LOG_PREFIX="MAILCOW-DROP: " # Change this to your liking
+
 IPTABLES_RULE_V4="-m set --match-set $IPSET_V4 src -j DROP"
 IPTABLES_RULE_V6="-m set --match-set $IPSET_V6 src -j DROP"
 
@@ -135,15 +134,15 @@ ensure_rule_at_top "$CHAIN_NAME" "$IPTABLES_RULE_V6" "ip6tables"
 
 if [ "$ENABLE_LOG" = true ]
 then
-  IPTABLES_RULE_V4_LOG="-m set --match-set abuseipdb_blacklist_v4 src -j LOG --log-prefix 'MAILCOW-DROP: ' --log-level 4"
-  IPTABLES_RULE_V6_LOG="-m set --match-set abuseipdb_blacklist_v6 src -j LOG --log-prefix 'MAILCOW-DROP: ' --log-level 4"
+  IPTABLES_RULE_V4_LOG="-m set --match-set abuseipdb_blacklist_v4 src -j LOG --log-prefix '$LOG_PREFIX' --log-level 4"
+  IPTABLES_RULE_V6_LOG="-m set --match-set abuseipdb_blacklist_v6 src -j LOG --log-prefix '$LOG_PREFIX' --log-level 4"
   
   # Remove all LOG rules
   for cmd in iptables ip6tables
   do
-    for line in $($cmd -nL MAILCOW --line-numbers | grep 'MAILCOW-DROP' | awk '{print $1}' | sort -rn)
+    for line in $($cmd -nL $CHAIN_NAME --line-numbers | grep '$LOG_PREFIX' | awk '{print $1}' | sort -rn)
     do
-      $cmd -D MAILCOW "$line" >/dev/null
+      $cmd -D $CHAIN_NAME "$line" >/dev/null
     done
   done
   
@@ -153,9 +152,9 @@ else
   # Remove all potential LOG rules as argument wasn't specified
   for cmd in iptables ip6tables
   do
-    for line in $($cmd -nL MAILCOW --line-numbers | grep 'MAILCOW-DROP' | awk '{print $1}' | sort -rn)
+    for line in $($cmd -nL $CHAIN_NAME --line-numbers | grep '$LOG_PREFIX' | awk '{print $1}' | sort -rn)
     do
-      $cmd -D MAILCOW "$line" >/dev/null
+      $cmd -D $CHAIN_NAME "$line" >/dev/null
     done
   done
 fi
