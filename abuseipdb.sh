@@ -113,10 +113,6 @@ ensure_rule_at_top() {
   else
     FIRST_RULE=$($cmd -S $chain | sed -n '2p')
     if [[ "$FIRST_RULE" != *"$rule"* ]]; then
-      
-      for line in $($cmd -nL MAILCOW --line-numbers | grep 'MAILCOW-DROP' | awk '{print $1}' | sort -rn); do
-        $cmd -D MAILCOW "$line"
-      done
       eval "$cmd -D $chain $rule"  # Remove old rule
       eval "$cmd -I $chain 1 $rule"  # Reinsert at the top
     fi
