@@ -1,6 +1,13 @@
 #!/bin/bash
 
 MAILCOW_DIR="/opt/mailcow-dockerized"
+
+# Check if mailcow directory exists
+if [ ! -f "$MAILCOW_DIR/mailcow.conf" ]; then
+  echo "ERROR: mailcow.conf not found in $MAILCOW_DIR, did you install mailcow in a different directory? Please check MAILCOW_DIR in this script"
+  exit 1
+fi
+
 BLOCKLIST_SRC="https://raw.githubusercontent.com/bitwire-it/ipblocklist/refs/heads/main/inbound.txt"
 BLOCKLIST_DST="${MAILCOW_DIR}/data/conf/rspamd/local.d/ipblocklist.map"
 BLOCKLIST_CFG="${MAILCOW_DIR}/data/conf/rspamd/override.d/multimap.conf"
